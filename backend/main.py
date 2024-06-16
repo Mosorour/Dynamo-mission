@@ -31,13 +31,13 @@ def analyze_video(request: VideoAnalysisRequest):
 
 
     processor = YoutubeProcessor(genai_processor=gemini_processor)
-    result= processor.retrieve_youtube_documents(str(request.youtube_link))
+    result= processor.retrieve_youtube_documents(str(request.youtube_link), verbose=True)
 
 
 
     #summary = gemini_processor.generate_document_summary(result, verbose=True)
 
-    key_concepts = processor.find_key_concepts(result, group_size=2)
+    key_concepts = processor.find_key_concepts(result, group_size=10, verbose=True)
 
     return{
         "key_concepts": key_concepts
