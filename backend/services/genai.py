@@ -5,7 +5,9 @@ from vertexai.generative_models import GenerativeModel
 from langchain.chains.summarize import load_summarize_chain
 from langchain.prompts import PromptTemplate
 from tqdm import tqdm
+import json
 import logging
+import re
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,7 +31,6 @@ class GeminiProcessor:
         temp_model = GenerativeModel("gemini-1.0-pro")
         total = 0
         logger.info("Counting total billable characters...")
-        from tqdm import tqdm
         for doc in tqdm(docs):
             total += temp_model.count_tokens(doc.page_content).total_billable_characters
         return total
@@ -39,9 +40,9 @@ class GeminiProcessor:
 
 class YoutubeProcessor:
     def __init__(self, genai_processor: GeminiProcessor):
-        self.text_splitter= RecursiveCharacterTextSplitter(
+        self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size = 1000,
-            chunk_overlap=0
+            chunk_overlap = 0
         )
         self.GeminiProcessor = genai_processor
     
@@ -55,21 +56,33 @@ class YoutubeProcessor:
         title=result[0].metadata['title']
         total_size=len(result)
 
-        total_billable_characters=self.GeminiProcessor.count_total_tokens(result)
-
         if verbose:
-            logger.info(f"{author}\n{length}\n{title}\n{total_size}\n{total_billable_characters}")
+            total_billable_characters = self.GeminiProcessor.count_total_tokens(result)
+            logging.info(f"{author}\n{length}\n{title}\n{total_size}\n{total_billable_characters}")
         
         return result
     
-    def find_key_concepts(self, documents:list, group_size: int=2, verbose = False):
+
+            
+    def find_key_concepts(self, documents:list, sample_size: int=0, verbose = False):
         #Iterate through all documents of group size N and find key concepts
-        if group_size > len(documents):
+        if sample_size > len(documents):
             raise ValueError("Group size is larger than the number of documents")
         
-        #Find number of documents in each group
-        num_docs_per_group = len(documents)//group_size + (len(documents)%group_size>0)
+        #Optimize sample size given no input
+        if sample_size == 0:
+            sample_size = len(documents) // 5
+            if verbose: logging.info(f"No sample size specified. Setting number of documents per sample as 5. Sample Size: {sample_size}")
 
+        #Find number of documents in each group
+        num_docs_per_group = len(documents) // sample_size + (len(documents) % sample_size > 0)
+
+        # Check thresholds
+        if num_docs_per_group > 10:
+            raise ValueError("Each group has more than 10 documents and output quality will be degraded significantly. Increase the sample_size parameter to reduce the number of documents per group.")
+        elif num_docs_per_group > 5:
+            logging.warn("Each group has more than 5 documents and output quality is likely to be degraded. Consider increasing the sample size.")
+        
         #Split the document in chunks of size num_docs_per_group
         groups = [documents[i:i+num_docs_per_group] for i in range(0, len(documents), num_docs_per_group)]
 
@@ -86,12 +99,12 @@ class YoutubeProcessor:
 
             # Prompt for finding concepts
             prompt = PromptTemplate(
-                template="""
+                template = """
                 Find and define key concepts or terms found in the text:
                 {text}
-
-                Respond in the following format as a string separating each concept with a comma:
-                "concept": "definition"
+                
+                Respond in the following format as a JSON object without any backticks separating each concept with a comma:
+                {{"concept": "definition", "concept": "definition", ...}}
                 """,
                 input_variables=["text"]
             )
@@ -100,27 +113,49 @@ class YoutubeProcessor:
             chain = prompt | self.GeminiProcessor.model
 
             output_concept = chain.invoke({"text": group_content})
+            
+
+            output_concept = clean_json_string(output_concept)
+
+            output_concept = output_concept.strip()
+            print("output here:",output_concept)
+
+            #if cleaned_chain:
             batch_concepts.append(output_concept)
+            
+            # Post Processing Observation
+            if verbose:
+                total_input_char = len(group_content)
+                total_input_cost = (total_input_char/1000) * 0.000125
 
-            #Post processing observation
-            total_input_char = len(group_content)
-            total_input_cost = (total_input_char/1000) * 0.000125
+                logging.info(f"Running chain on {len(group)} documents")
+                logging.info(f"Total input characters: {total_input_char}")
+                logging.info(f"Total cost: {total_input_cost}")
 
-            logging.info(f"Running chain on {len(group)} documents")
-            logging.info(f"Total input characters: {total_input_char}")
-            logging.info(f"Tota cost: {total_input_cost}")
+                total_output_char = len(output_concept)
+                total_output_cost = (total_output_char/1000) * 0.000375
 
-            total_output_char = len(output_concept)
-            total_output_cost = (total_output_char/1000)*0.000375
+                logging.info(f"Total output characters: {total_output_char}")
+                logging.info(f"Total cost: {total_output_cost}")
 
-            logging.info(f"Total output characters: {total_output_char}")
-            logging.info(f"Tota cost: {total_output_cost}")
+                batch_cost += total_input_cost + total_output_cost
+                logging.info(f"Total group cost: {total_input_cost + total_output_cost}\n")
 
-            batch_cost += total_input_cost+total_output_cost
-            logging.info(f"Total group cost: {total_input_cost + total_output_cost}\n")
+        # Convert each JSON string in batch_concepts to a Python Dict
+        processed_concepts = [json.loads(concept) for concept in batch_concepts]
 
-
-        logging.info(f"Total Analysis Cost: ${batch_cost}")
-        return batch_concepts
+        logging.info(f"Total Analysis Cost: ${batch_cost}")    
+        return processed_concepts
 
 
+def clean_json_string(json_str):
+    # Define a regex pattern to match everything before and after the curly braces
+    pattern = r"^.*?({.*}).*$"
+    # Use re.findall to extract the JSON part from the string
+    matches = re.findall(pattern, json_str, re.DOTALL)
+    if matches:
+            # If there's a match, return the first one (should be the JSON)
+        return matches[0]
+    else:
+            # If no match is found, return None
+        return None
