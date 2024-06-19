@@ -5,7 +5,7 @@ function Flashcard({ term, definition, onDiscard }) {
         <div className='flashcard'>
             <h3>{term}</h3>
             <p>{definition}</p>
-            <button onClick={onDiscard} style={{ marginTop: '10px' }}>
+            <button onClick={onDiscard} style={{ marginTop: '5px' }}>
                 Discard
             </button>
         </div>
